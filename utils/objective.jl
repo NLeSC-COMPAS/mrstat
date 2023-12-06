@@ -1,4 +1,5 @@
 function objective(optimpars::Vector{<:Real}, resource, mode, raw_data, sequence, coordinates, coil_sensitivities, trajectory)
+    GC.gc(true)
 
     # We compute the residual rᵢ = ||d Σᵢ (dᵢ - M(T₁,T₂,B₁,B₀)*Cᵢ*ρ)
     # f = (1/2) * |r|^2
@@ -11,63 +12,99 @@ function objective(optimpars::Vector{<:Real}, resource, mode, raw_data, sequence
     # Convert optimpars (Vector{<:Real}) to Vector{<:AbstractTissueParameters} to be used in simulations
     parameters = optim_to_physical_pars(optimpars, coordinates)
 
-    # Convert to single precision and send to gpu device
-    parameters = gpu(f32(parameters))
+    # Send to gpu device
+    parameters = CompasToolkit.TissueParameters(
+        nvoxels,
+        StructArray(parameters).T₁,
+        StructArray(parameters).T₂,
+        fill(1, nvoxels), # B1
+        fill(0, nvoxels), # B0
+        StructArray(parameters).ρˣ,
+        StructArray(parameters).ρʸ,
+        StructArray(parameters).x,
+        StructArray(parameters).y
+    )
 
-    # Compute magnetization at echo times
-    echos = simulate_magnetization(resource, sequence, parameters)
+    # Compute magnetization at echo times    
+    magnetization = CompasToolkit.simulate_magnetization(parameters, sequence)
+
+    # Apply phase encoding
+    echos = CompasToolkit.phase_encoding(
+        magnetization,
+        parameters,
+        trajectory
+    )
+
+
+    # Compute signal
+    s = CompasToolkit.magnetization_to_signal(echos, parameters, trajectory, coil_sensitivities)
+
+    # Compute residual r
+    f, r = CompasToolkit.compute_residual(s, raw_data)
+
+    ncoils = size(r, 3)
+    r_host = reshape(collect(r), :, ncoils)
+    r_host = map(SVector{ncoils}, eachrow(r_host))
+
+    # Compute cost f
+    f = 0.5 * f
+
 
     if mode == 0
 
-        # Apply phase encoding
-        phase_encoding!(echos, trajectory, parameters)
-
-        # Compute signal
-        s = magnetization_to_signal(resource, echos, parameters, trajectory, coil_sensitivities)
-
-        # Compute residual r
-        r = s - raw_data;
-
-        # Compute cost f
-        f = 0.5 * sum(norm.(r).^2);
-
-        return f, r
+        return f, r_host
 
     elseif mode > 0
 
         # Compute partial derivatives of magnetization at echo time
-        ∂echos = simulate_derivatives(echos, resource, sequence, parameters)
+        ∂echos = CompasToolkit.simulate_magnetization_derivatives(magnetization, parameters, sequence)
 
         # Apply phase encoding
-        phase_encoding!(echos, trajectory, parameters)
-        phase_encoding!(∂echos, trajectory, parameters)
-
-        # Compute signal
-        s = magnetization_to_signal(resource, echos, parameters, trajectory, coil_sensitivities)
-
-        # Compute residual r
-        r = s - raw_data;
-
-        # Compute cost f
-        f = 0.5 * sum(norm.(r).^2);
+        ∂echos = CompasToolkit.phase_encoding(∂echos, parameters, trajectory)
 
         # Compute gradient
-        g = Jᴴv(resource, echos, ∂echos, parameters, coil_sensitivities, trajectory, r)
-        g = StructArray(g)
-        g = reduce(vcat,fieldarrays(g))
-        g = real.(g)
-        g = collect(g)
+        g = CompasToolkit.compute_jacobian_hermitian(
+            echos,
+            ∂echos,
+            parameters,
+            trajectory,
+            coil_sensitivities,
+            r
+        )
 
-        mode == 1 && return f, r, g
+        # Reshape as vector of reals
+        g = collect(g)
+        g = reshape(g, :)
+        g = real.(g)
+
+        mode == 1 && return f, r_host, g
 
         # Make Gauss-Newton matrix multiply function
         reJᴴJ(x) = begin
             np = 4 # nr of reconstruction parameters per voxel
             x = reshape(x,:,np)
-            x = map(SVector{4}, eachcol(x)...) |> gpu
-            y = Jv(resource, echos, ∂echos, parameters, coil_sensitivities, trajectory, x)
-            z = Jᴴv(resource, echos, ∂echos, parameters, coil_sensitivities, trajectory, y)
-            return real.(reduce(vcat,fieldarrays(StructArray(z))))
+            x = ComplexF32.(x)
+            
+            y = CompasToolkit.compute_jacobian(
+                echos,
+                ∂echos,
+                parameters,
+                trajectory,
+                coil_sensitivities,
+                x
+            )
+            
+            z = CompasToolkit.compute_jacobian_hermitian(
+                echos,
+                ∂echos,
+                parameters,
+                trajectory,
+                coil_sensitivities,
+                y
+            )
+
+            z = collect(z)
+            return real.(reshape(z, :))
         end
 
         H = LinearMap(
@@ -75,7 +112,7 @@ function objective(optimpars::Vector{<:Real}, resource, mode, raw_data, sequence
             v -> v, # adjoint operation not used
         length(g),length(g));
 
-        return f, r, g, H
+        return f, r_host, g, H
     end
 end
 

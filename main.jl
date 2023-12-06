@@ -5,6 +5,8 @@ using LinearMaps
 using ImagePhantoms
 using PythonPlot
 using ComputationalResources
+using CompasToolkit
+using Random
 
 includet("TrustRegionReflective/TrustRegionReflective.jl")
 includet("DerivativeOperations/DerivativeOperations.jl")
@@ -16,6 +18,9 @@ includet("utils/make_phantom.jl")
 includet("utils/objective.jl")
 includet("utils/RelaxationColors.jl")
 includet("utils/pythonplot.jl")
+
+# Seed RNG to get consistent results
+    Random.seed!(2)
 
 # Simulation size
 
@@ -72,13 +77,14 @@ includet("utils/pythonplot.jl")
 
 # Make phantom
 
-    phantom = make_phantom(N, coordinates);
+    phantom_2d = make_phantom(N, coordinates);
+    phantom = phantom_2d |> f32 |> vec
 
-    plot_T₁T₂ρ(phantom, N, N, "Ground truth")
+    ## plot_T₁T₂ρ(phantom, N, N, "Ground truth")
 
 # Make coil sensitivities
 
-    ncoils = 1
+    ncoils = 2
     coil_sensitivities = rand((0.75:0.01:1.25), ncoils,N^2) .|> complex
     coil_sensitivities .= 1
     coil_sensitivities = map(SVector{ncoils}, eachcol(coil_sensitivities))
@@ -89,8 +95,42 @@ includet("utils/pythonplot.jl")
 
     coil_sensitivities = map(SVector{2}, vec(coil₁), vec(coil₂))
 
-# Set precision and send to gpu
 
+# Simulate data
+    nvoxels = length(coordinates)
+    compas_context = CompasToolkit.init_context(0)
+    compas_sequence = CompasToolkit.FispSequence(RF_train, sliceprofiles, TR, TE, max_state, TI)
+    compas_trajectory = CompasToolkit.CartesianTrajectory(nreadouts, nsamplesperreadout, Δt, k_start_readout, Δk_adc)
+    compas_phantom = CompasToolkit.TissueParameters(
+        nvoxels,
+        StructArray(phantom).T₁,
+        StructArray(phantom).T₂,
+        fill(1, nvoxels), # B1
+        fill(0, nvoxels), # B0
+        StructArray(phantom).ρˣ,
+        StructArray(phantom).ρʸ,
+        StructArray(phantom).x,
+        StructArray(phantom).y
+    )
+
+    compas_coils = CompasToolkit.make_array(compas_context, Float32.(hcat(vec(coil₁), vec(coil₂))))
+
+    compas_echos = CompasToolkit.simulate_magnetization(compas_phantom, compas_sequence)
+    compas_echos = CompasToolkit.phase_encoding(compas_echos, compas_phantom, compas_trajectory)
+    compas_data = CompasToolkit.magnetization_to_signal(compas_echos, compas_phantom, compas_trajectory, compas_coils)
+
+    compas = (
+        context = compas_context,
+        sequence = compas_sequence,
+        trajectory = compas_trajectory,
+        parameters = compas_phantom,
+        coils = compas_coils,
+        data = compas_data
+    )
+
+
+
+# Set precision and send to gpu
     phantom             = gpu(f32(vec(phantom)))
     sequence            = gpu(f32(sequence))
     trajectory          = gpu(f32(trajectory))
@@ -99,7 +139,8 @@ includet("utils/pythonplot.jl")
 
 # Simulate data
     resource = CUDALibs()
-    raw_data = simulate_signal(resource, sequence, phantom, trajectory, coil_sensitivities)
+    # raw_data = simulate_signal(resource, sequence, phantom, trajectory, coil_sensitivities)
+    raw_data = Nothing
 
 # Add noise?
 
@@ -120,11 +161,11 @@ includet("utils/pythonplot.jl")
     @assert all( Cᵢ -> !iszero(sum(Cᵢ)), coil_sensitivities);
 
     # Make plot function for further plotting of the iterations
-    objfun = (x,mode) -> objective(x, resource, mode, raw_data, sequence, coordinates, coil_sensitivities, trajectory)
+    objfun = (x,mode) -> objective(x, resource, mode, compas.data, compas.sequence, coordinates, compas.coils, compas.trajectory)
 
     # Run Trust Refion Reflective solver
     trf_min_ratio = 0.05;
-    trf_max_iter = 20;
+    trf_max_iter = 3;  #15
     trf_max_iter_steihaug = 20;
     trf_tol_steihaug = 0.1;
     trf_init_scale_radius = 0.1;
@@ -138,7 +179,7 @@ includet("utils/pythonplot.jl")
         trf_init_scale_radius,
         trf_save_every_iter)
 
-    plotfun(x, figtitle) = plot_T₁T₂ρ(optim_to_physical_pars(x), N, N, figtitle)
+    plotfun(x, figtitle) = println("plotting $figtitle") #plot_T₁T₂ρ(optim_to_physical_pars(x), N, N, figtitle)
 
     plotfun(x0, "Initial Guess")
 
