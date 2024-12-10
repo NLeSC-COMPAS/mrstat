@@ -7,7 +7,9 @@ _, rgb_vec_T₂ = relaxationColorMap("T2", img, loLevT₂, upLevT₂)
 lipari = PythonPlot.ColorMap("lipari", rgb_vec_T₁, length(rgb_vec_T₁), 1.0)
 navia  = PythonPlot.ColorMap("navia",  rgb_vec_T₂, length(rgb_vec_T₂), 1.0)
 
-function plot_T₁T₂ρ(x::AbstractArray{<:AbstractTissueParameters}, Nx, Ny, figtitle="")
+plot_timestep::Int = 0
+
+function plot_T₁T₂ρ(x::AbstractArray{<:AbstractTissueProperties}, Nx, Ny, figtitle="")
 
     q = StructArray(reshape(x,Nx,Ny))
 
@@ -27,5 +29,9 @@ function plot_T₁T₂ρ(x::AbstractArray{<:AbstractTissueParameters}, Nx, Ny, f
         xlabel("ρ [a.u.]")
 
     suptitle(figtitle)
+
+    global plot_timestep += 1
+    println("writing image to `image_$(plot_timestep).pdf`")
+    savefig("image_$(plot_timestep).pdf")
 
 end

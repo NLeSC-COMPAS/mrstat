@@ -19,9 +19,9 @@ function make_phantom(N, coordinates)
 
     T₂[ T₂ .> T₁ ] .= 0.5 * T₁[ T₂ .> T₁ ]
 
-    @assert length(coordinates) == N^2
-    x = first.(coordinates)
-    y = last.(coordinates)
+    #@assert length(coordinates) == N^2
+    #x = first.(coordinates)
+    #y = last.(coordinates)
 
-    return map(T₁T₂ρˣρʸxy, T₁, T₂, ρˣ, ρʸ, x, y)
+    return map(T₁T₂ρˣρʸ, T₁, T₂, ρˣ, ρʸ)
 end

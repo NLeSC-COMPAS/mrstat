@@ -21,8 +21,8 @@ function objective(optimpars::Vector{<:Real}, resource, mode, raw_data, sequence
         fill(0, nvoxels), # B0
         StructArray(parameters).ρˣ,
         StructArray(parameters).ρʸ,
-        StructArray(parameters).x,
-        StructArray(parameters).y
+        collect(coordinates.x),
+        collect(coordinates.y)
     )
 
     # Compute magnetization at echo times    
@@ -134,8 +134,8 @@ function optim_to_physical_pars(optimpars, coordinates)
     T₂ = exp.(optimpars[:,2])
     ρˣ = optimpars[:,3]
     ρʸ = optimpars[:,4]
-    x = first.(collect(coordinates))
-    y = last.(collect(coordinates))
+    #x = collect(coordinates)
+    #y = collect(coordinates)
 
-    return map(T₁T₂ρˣρʸxy, T₁, T₂, ρˣ, ρʸ, x, y)
+    return map(T₁T₂ρˣρʸ, T₁, T₂, ρˣ, ρʸ)
 end

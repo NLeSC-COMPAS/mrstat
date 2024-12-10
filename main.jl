@@ -1,6 +1,9 @@
 using Revise
 using BlochSimulators
-using StaticArrays, LinearAlgebra, Statistics, StructArrays
+using StaticArrays
+using LinearAlgebra
+using Statistics
+using StructArrays
 using LinearMaps
 using ImagePhantoms
 using PythonPlot
@@ -8,16 +11,16 @@ using ComputationalResources
 using CompasToolkit
 using Random
 
-includet("TrustRegionReflective/TrustRegionReflective.jl")
-includet("DerivativeOperations/DerivativeOperations.jl")
+include("TrustRegionReflective/TrustRegionReflective.jl")
+include("DerivativeOperations/DerivativeOperations.jl")
 
 using .TrustRegionReflective
 using .DerivativeOperations
 
-includet("utils/make_phantom.jl")
-includet("utils/objective.jl")
-includet("utils/RelaxationColors.jl")
-includet("utils/pythonplot.jl")
+include("utils/make_phantom.jl")
+include("utils/objective.jl")
+include("utils/RelaxationColors.jl")
+include("utils/pythonplot.jl")
 
 # Seed RNG to get consistent results
     Random.seed!(2)
@@ -34,7 +37,7 @@ includet("utils/pythonplot.jl")
     sliceprofiles = ones(nTR,1) .|> complex;
     TR = 0.010;
     TE = 0.006;
-    max_state = 35;
+    max_state = 32;
     TI = 0.025;
 
     # assemble sequence struct
@@ -49,7 +52,7 @@ includet("utils/pythonplot.jl")
     x =  -FOVˣ/2 : Δx : FOVˣ/2 - Δx; # cm
     y =  -FOVʸ/2 : Δy : FOVʸ/2 - Δy; # cm
 
-    coordinates = tuple.(x,y');
+    coordinates = make_coordinates(collect(x), collect(y), [1.0]);
 
 # Make trajectory
 
@@ -73,7 +76,7 @@ includet("utils/pythonplot.jl")
     nreadouts = nTR
     nsamplesperreadout = N
 
-    trajectory = CartesianTrajectory(nreadouts, nsamplesperreadout, Δt, k_start_readout, Δk_adc, py)
+    trajectory = CartesianTrajectory2D(nreadouts, nsamplesperreadout, Δt, k_start_readout, Δk_adc, py, 2)
 
 # Make phantom
 
@@ -109,11 +112,11 @@ includet("utils/pythonplot.jl")
         fill(0, nvoxels), # B0
         StructArray(phantom).ρˣ,
         StructArray(phantom).ρʸ,
-        StructArray(phantom).x,
-        StructArray(phantom).y
+        coordinates.x,
+        coordinates.y,
     )
 
-    compas_coils = CompasToolkit.make_array(compas_context, Float32.(hcat(vec(coil₁), vec(coil₂))))
+    compas_coils = CompasToolkit.make_array(compas_context, ComplexF32.(hcat(vec(coil₁), vec(coil₂))))
 
     compas_echos = CompasToolkit.simulate_magnetization(compas_phantom, compas_sequence)
     compas_echos = CompasToolkit.phase_encoding(compas_echos, compas_phantom, compas_trajectory)
@@ -165,7 +168,7 @@ includet("utils/pythonplot.jl")
 
     # Run Trust Refion Reflective solver
     trf_min_ratio = 0.05;
-    trf_max_iter = 3;  #15
+    trf_max_iter = 15
     trf_max_iter_steihaug = 20;
     trf_tol_steihaug = 0.1;
     trf_init_scale_radius = 0.1;
@@ -179,7 +182,7 @@ includet("utils/pythonplot.jl")
         trf_init_scale_radius,
         trf_save_every_iter)
 
-    plotfun(x, figtitle) = println("plotting $figtitle") #plot_T₁T₂ρ(optim_to_physical_pars(x), N, N, figtitle)
+    plotfun(x, figtitle) = plot_T₁T₂ρ(optim_to_physical_pars(x), N, N, figtitle)
 
     plotfun(x0, "Initial Guess")
 
