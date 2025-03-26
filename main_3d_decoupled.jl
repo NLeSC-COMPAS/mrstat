@@ -25,16 +25,19 @@ include("utils/pythonplot.jl")
 
 # Load JLD2 file with data, sequence, trajectory and coordinates
 
-    @load "mrstat_3d_decoupled.jld2" data sequence trajectory coordinates
+    @load "mrstat_3d_decoupled_with_pd2.jld2" data sequence trajectory coordinates pd
 
 # Don't ask
 
     # Make RF train twice as long
-    RF_train = copy(sequence.RF_train)
-    push!(sequence.RF_train, zero(RF_train)...)
+    #RF_train = copy(sequence.RF_train)
+    #push!(sequence.RF_train, zero(RF_train)...)
     # insert zero after each RF pulse
-    RF_train_padded = [transpose(RF_train) ; zero(transpose(RF_train))] |> vec 
-    sequence.RF_train .= RF_train_padded
+    #RF_train_padded = [transpose(RF_train) ; zero(transpose(RF_train))] |> vec 
+    #sequence.RF_train .= RF_train_padded
+
+    sliceprofiles = ones(length(sequence.RF_train),1) .|> complex;
+    unwrap(::Val{x}) where x = x
     
 # Make coil sensitivities
 
@@ -42,8 +45,9 @@ include("utils/pythonplot.jl")
     Ny = size(coordinates, 2)
 
     ncoils = 1
-    coil_sensitivities = complex(ones(ncoils,Nx * Ny))
-    coil_sensitivities = map(SVector{ncoils}, eachcol(coil_sensitivities))
+    coil_sensitivities = ComplexF32.(ones(Nx * Ny, ncoils))
+    #coil_sensitivities = map(SVector{ncoils}, eachcol(coil_sensitivities))
+    #coil_sensitivities = ComplexF32.(vec(only.(coil_sensitivities)))
 
 # Compas
 
@@ -51,10 +55,10 @@ include("utils/pythonplot.jl")
 
     compas_sequence = CompasToolkit.FispSequence(
         sequence.RF_train, 
-        sequence.sliceprofiles, 
+        sliceprofiles, 
         sequence.TR,
         sequence.TE,
-        sequence.max_state,
+        unwrap(sequence.max_state),
         sequence.TI
     )
 
@@ -66,8 +70,12 @@ include("utils/pythonplot.jl")
         trajectory.Δk_adc
     )
 
-    compas_coils = CompasToolkit.make_array(compas_context, ComplexF32.(vec(only.(coil_sensitivities))))
+    bloch = (
+        sequence=sequence,
+        trajectory=trajectory
+    ) 
 
+    compas_coils = CompasToolkit.make_array(compas_context, coil_sensitivities)
 
 # Add noise?
 
@@ -91,14 +99,20 @@ include("utils/pythonplot.jl")
 
     qmaps = zeros(T₁T₂ρˣρʸ, Nx, Ny, nr_slices)
 
-    for slice in 30:nr_slices-30 # First and last few slices aren't that interesting
+    #for slice in 30:nr_slices-30 # First and last few slices aren't that interesting
+    #for slice in fld(nr_slices, 2)-5:fld(nr_slices, 2)+5
+    for slice in 30:10:nr_slices-30
+        println("processing slice ", slice, " of ", nr_slices)
 
+        compas_data_slice = data[:,:,1,slice:slice]
+        coordinates_slice = vec(coordinates[:,:,1,slice])
 
-        compas_data_current_slice = # TODO: SOMETHING(data[:,:,slice])
-        coordinates_current_slice = vec(coordinates[:,:,1,slice])
+        x0_slice = copy(x0)
+        x0_slice[:,3] .= real.(vec(pd[:,:,1,slice]))
+        x0_slice[:,4] .= imag.(vec(pd[:,:,1,slice]))
 
         # Make plot function for further plotting of the iterations
-        objfun = (x,mode) -> objective(x, resource, mode, compas_data, compas_sequence, coordinates, compas_coils, compas_trajectory)
+        objfun = (x,mode) -> objective(x, CUDALibs(), mode, compas_data_slice, compas_sequence, coordinates_slice, compas_coils, compas_trajectory, bloch)
 
         # Run Trust Refion Reflective solver
         trf_min_ratio = 0.05;
@@ -116,13 +130,13 @@ include("utils/pythonplot.jl")
             trf_init_scale_radius,
             trf_save_every_iter)
 
-        # plotfun(x, figtitle) = plot_T₁T₂ρ(optim_to_physical_pars(x), N, N, figtitle)
+        plotfun(x, figtitle) = plot_T₁T₂ρ(optim_to_physical_pars(x), Nx, Ny, figtitle)
 
-        # plotfun(x0, "Initial Guess")
+        plotfun(x0_slice, "Initial Guess")
 
         # Run non-linear solver
 
-        output = TrustRegionReflective.solver(objfun, vec(x0), vec(LB), vec(UB), TRF_options, plotfun)
+        output = TrustRegionReflective.solver(objfun, vec(x0_slice), vec(LB), vec(UB), TRF_options, plotfun)
 
         q = optim_to_physical_pars(output.x[:,end])
         qmaps[:,:,slice] = reshape(q, Nx, Ny)
