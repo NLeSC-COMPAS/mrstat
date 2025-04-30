@@ -11,7 +11,7 @@ function plot_file(name, mat)
 end
 
 function objective(optimpars::Vector{<:Real}, resource, mode, raw_data, sequence, coordinates, coil_sensitivities, trajectory, bloch)
-    GC.gc(true)
+    #GC.gc(true)
 
     # We compute the residual rᵢ = ||d Σᵢ (dᵢ - M(T₁,T₂,B₁,B₀)*Cᵢ*ρ)
     # f = (1/2) * |r|^2
@@ -41,8 +41,8 @@ function objective(optimpars::Vector{<:Real}, resource, mode, raw_data, sequence
 
     # Compute magnetization at echo times
     magnetization_original = CompasToolkit.simulate_magnetization(parameters, sequence)
-    magnetization = repeat(collect(magnetization_original), inner=(1, 2))
-    plot_file("magnetization", magnetization)
+    magnetization = magnetization_original #repeat(collect(magnetization_original), inner=(1, 2))
+    #plot_file("magnetization", magnetization)
 
     # Apply phase encoding
     echos = CompasToolkit.phase_encoding(
@@ -76,16 +76,13 @@ function objective(optimpars::Vector{<:Real}, resource, mode, raw_data, sequence
         plot_file("derivative_T1", ∂echos.T1)
         plot_file("derivative_T2", ∂echos.T2)
 
-        ∂echos = (
-            T1=repeat(collect(∂echos.T1), inner=(1, 2)),
-            T2=repeat(collect(∂echos.T2), inner=(1, 2))
-        )
+        #∂echos = (
+        #    T1=repeat(collect(∂echos.T1), inner=(1, 2)),
+        #    T2=repeat(collect(∂echos.T2), inner=(1, 2))
+        #)
 
         # Apply phase encoding
-        ∂echos = (
-            T1=CompasToolkit.phase_encoding(∂echos.T1, parameters, trajectory),
-            T2=CompasToolkit.phase_encoding(∂echos.T2, parameters, trajectory)
-        )
+        ∂echos = CompasToolkit.phase_encoding(∂echos, parameters, trajectory)
 
         # Compute gradient
         g = CompasToolkit.compute_jacobian_hermitian(

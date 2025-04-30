@@ -10,7 +10,10 @@ using PythonPlot
 using ComputationalResources
 using CompasToolkit
 using Random
+using Pkg
 using JLD2
+
+GC.enable_logging(true)
 
 include("TrustRegionReflective/TrustRegionReflective.jl")
 include("DerivativeOperations/DerivativeOperations.jl")
@@ -26,6 +29,11 @@ include("utils/pythonplot.jl")
 # Load JLD2 file with data, sequence, trajectory and coordinates
 
     @load "mrstat_3d_decoupled_with_pd2.jld2" data sequence trajectory coordinates pd
+
+# Fix k0
+    kˣ = -real.(trajectory.Δk_adc) * trajectory.nsamplesperreadout / 2
+    kʸ = imag.(trajectory.k_start_readout)
+    trajectory.k_start_readout .= kˣ .+ kʸ .* im
 
 # Don't ask
 
@@ -59,7 +67,9 @@ include("utils/pythonplot.jl")
         sequence.TR,
         sequence.TE,
         unwrap(sequence.max_state),
-        sequence.TI
+        sequence.TI;
+        undersampling_factor=sequence.py_undersampling_factor,
+        repetitions=sequence.repetitions,
     )
 
     compas_trajectory = CompasToolkit.CartesianTrajectory(
@@ -75,7 +85,7 @@ include("utils/pythonplot.jl")
         trajectory=trajectory
     ) 
 
-    compas_coils = CompasToolkit.make_array(compas_context, coil_sensitivities)
+    compas_coils = CompasToolkit.CompasArray(coil_sensitivities)
 
 # Add noise?
 
@@ -101,7 +111,7 @@ include("utils/pythonplot.jl")
 
     #for slice in 30:nr_slices-30 # First and last few slices aren't that interesting
     #for slice in fld(nr_slices, 2)-5:fld(nr_slices, 2)+5
-    Threads.@threads :dynamic for slice in 100:1:101
+    time = @elapsed Threads.@threads :dynamic for slice in 100:1:101
         CompasToolkit.set_context(compas_context)
             
         thread_id = Threads.threadid()
@@ -138,11 +148,16 @@ include("utils/pythonplot.jl")
         plotfun(x0_slice, "Initial Guess")
 
         # Run non-linear solver
-        output = TrustRegionReflective.solver(objfun, vec(x0_slice), vec(LB), vec(UB), TRF_options, plotfun)
+        time = @elapsed output = TrustRegionReflective.solver(objfun, vec(x0_slice), vec(LB), vec(UB), TRF_options, plotfun)
 
         q = optim_to_physical_pars(output.x[:,end])
         qmaps[:,:,slice] = reshape(q, Nx, Ny)
+        plot_T₁T₂ρ(q, Nx, Ny, "Result slice $slice")
+        
+        println("Thread $thread_id processed slice $slice of $nr_slices, took $time seconds")
     end
+        
+    println("Done. Took $time seconds")
 
 # Plot results:
 # qmaps.T₁

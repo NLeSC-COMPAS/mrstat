@@ -15,16 +15,20 @@ function plot_T₁T₂ρ(x::AbstractArray{<:AbstractTissueProperties}, Nx, Ny, f
 
     figure()
 
-    subplot(131)
+    subplot(221)
         imshow(q.T₁, clim=(0.0,2.5), cmap=lipari)
         colorbar()
         xlabel("T₁ [s]")
-    subplot(132)
+    subplot(222)
         imshow(q.T₂, clim=(0.0,0.35), cmap=navia)
         colorbar()
         xlabel("T₂ [s]")
-    subplot(133)
+    subplot(223)
         imshow(abs.(complex.(q.ρˣ, q.ρʸ)), clim=(0.0,2.0), cmap="gray")
+        colorbar()
+        xlabel("ρ [a.u.]")
+    subplot(224)
+        imshow(angle.(complex.(q.ρˣ, q.ρʸ)), clim=(0.0,2.0), cmap="gray")
         colorbar()
         xlabel("ρ [a.u.]")
 
