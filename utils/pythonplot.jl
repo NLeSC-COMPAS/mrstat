@@ -28,9 +28,9 @@ function plot_T₁T₂ρ(x::AbstractArray{<:AbstractTissueProperties}, Nx, Ny, f
         colorbar()
         xlabel("ρ [a.u.]")
     subplot(224)
-        imshow(angle.(complex.(q.ρˣ, q.ρʸ)), clim=(0.0,2.0), cmap="gray")
+        imshow(angle.(complex.(q.ρˣ, q.ρʸ)), cmap="hsv")
         colorbar()
-        xlabel("ρ [a.u.]")
+        xlabel("ρ [angle]")
 
     suptitle(figtitle)
 

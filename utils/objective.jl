@@ -3,14 +3,7 @@ using Statistics
 using PythonPlot
 
 
-function plot_file(name, mat)
-    #figure()
-    #imshow(abs.(collect(mat)), aspect="auto")
-    #colorbar()
-    #savefig(string(name, ".pdf"))
-end
-
-function objective(optimpars::Vector{<:Real}, resource, mode, raw_data, sequence, coordinates, coil_sensitivities, trajectory, bloch)
+function objective(optimpars::Vector{<:Real}, mode, raw_data, sequence, coordinates, coil_sensitivities, trajectory)
     #GC.gc(true)
 
     # We compute the residual rᵢ = ||d Σᵢ (dᵢ - M(T₁,T₂,B₁,B₀)*Cᵢ*ρ)
@@ -42,7 +35,6 @@ function objective(optimpars::Vector{<:Real}, resource, mode, raw_data, sequence
     # Compute magnetization at echo times
     magnetization_original = CompasToolkit.simulate_magnetization(parameters, sequence)
     magnetization = magnetization_original #repeat(collect(magnetization_original), inner=(1, 2))
-    #plot_file("magnetization", magnetization)
 
     # Apply phase encoding
     echos = CompasToolkit.phase_encoding(
@@ -70,14 +62,6 @@ function objective(optimpars::Vector{<:Real}, resource, mode, raw_data, sequence
 
     # Compute partial derivatives of magnetization at echo time
     ∂echos = CompasToolkit.simulate_magnetization_derivatives(magnetization_original, parameters, sequence)
-
-    plot_file("derivative_T1", ∂echos.T1)
-    plot_file("derivative_T2", ∂echos.T2)
-
-    #∂echos = (
-    #    T1=repeat(collect(∂echos.T1), inner=(1, 2)),
-    #    T2=repeat(collect(∂echos.T2), inner=(1, 2))
-    #)
 
     # Apply phase encoding
     ∂echos = CompasToolkit.phase_encoding(∂echos, parameters, trajectory)

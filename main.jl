@@ -1,20 +1,22 @@
-using Revise
+using ArgParse
 using BlochSimulators
-using StaticArrays
+using CompasToolkit
+using ComputationalResources
+using ImagePhantoms
+using TimerOutputs
+using JLD2
 using LinearAlgebra
+using LinearMaps
+using Pkg
+using PythonPlot
+using Random
+using Revise
+using StaticArrays
 using Statistics
 using StructArrays
-using LinearMaps
-using ImagePhantoms
-using PythonPlot
-using ComputationalResources
-using CompasToolkit
-using Random
+using TrustRegionReflective
 
-include("TrustRegionReflective/TrustRegionReflective.jl")
 include("DerivativeOperations/DerivativeOperations.jl")
-
-using .TrustRegionReflective
 using .DerivativeOperations
 
 include("utils/make_phantom.jl")
@@ -22,128 +24,86 @@ include("utils/objective.jl")
 include("utils/RelaxationColors.jl")
 include("utils/pythonplot.jl")
 
-# Seed RNG to get consistent results
-    Random.seed!(2)
 
-# Simulation size
+function parse_args()
+    s = ArgParseSettings()
 
-    N = 224; # phantom of size N^2
-    K = 5; # number of fully sampled Cartesian "transient-state k-spaces"
-    nTR = K*N; # total number of TRs
+    @add_arg_table s begin
+        "--num-slices", "-n"
+            help = "number of slices to process"
+            arg_type = Int
+        "--start-slice", "-s"
+            help = "offset slice from where to start processing"
+            arg_type = Int
+        "--file-name", "-f"
+            help = "the input file"
+            arg_type = String
+            default = "mrstat_3d_decoupled_with_pd2.jld2"
+        "--gc-debug"
+            help = "enable garbage collection logging"
+            action = :store_true
+    end
 
-# Make sequence
+    return ArgParse.parse_args(s)
+end
 
-    RF_train = range(start=1,stop=90,length=nTR) .|> complex;
-    sliceprofiles = ones(nTR,1) .|> complex;
-    TR = 0.010;
-    TE = 0.006;
-    max_state = 32;
-    TI = 0.025;
 
-    # assemble sequence struct
-    sequence = FISP2D(RF_train, sliceprofiles, TR, TE, max_state, TI) |> f32 |> gpu;
+function main(args)
+    if args["gc-debug"]
+        GC.enable_logging(true)
+    end
 
-# Make coordinates
+# Load JLD2 file with data, sequence, trajectory and coordinates
+    file_name = args["file-name"]
+    @load file_name data sequence trajectory coordinates pd
 
-    FOVˣ = 22.4 # cm
-    FOVʸ = 22.4 # cm
-    Δx = FOVˣ/N; # cm
-    Δy = FOVˣ/N; # cm
-    x =  -FOVˣ/2 : Δx : FOVˣ/2 - Δx; # cm
-    y =  -FOVʸ/2 : Δy : FOVʸ/2 - Δy; # cm
+    Nx = size(coordinates, 1)
+    Ny = size(coordinates, 2)
+    nr_slices = size(coordinates, 4)
+    ncoils = 1
 
-    coordinates = make_coordinates(collect(x), collect(y), [1.0]);
+    println("parsing ", file_name)
+    println("- num. slices: ", nr_slices)
+    println("- num. readouts: ", trajectory.nreadouts)
+    println("- num. samples per readout: ", trajectory.nsamplesperreadout)
+    println("- num. voxels: ", Nx, "x", Ny)
+    println("- num. coils: ", ncoils)
 
-# Make trajectory
+# Fix k0
+    kˣ = -real.(trajectory.Δk_adc) * trajectory.nsamplesperreadout / 2
+    kʸ = imag.(trajectory.k_start_readout)
+    trajectory.k_start_readout .= kˣ .+ kʸ .* im
 
-    # dwell time between samples within readout
-    Δt = 5e-6
-
-    # phase encoding lines (linear sampling, repeated K times)
-    py_min = -N÷2;
-    py_max =  N÷2-1;
-    py = repeat(py_min:py_max, K);
-
-    # determine starting point in k-space for each readout
-    Δkˣ = 2π / FOVˣ;
-    Δkʸ = 2π / FOVʸ;
-    k_start_readout = [(-N/2 * Δkˣ) + im * (py[r] * Δkʸ) for r in 1:nTR];
-
-    # k-space step between samples within readout
-    Δk_adc = Δkˣ
-
-    # assemble trajectory struct
-    nreadouts = nTR
-    nsamplesperreadout = N
-
-    trajectory = CartesianTrajectory2D(nreadouts, nsamplesperreadout, Δt, k_start_readout, Δk_adc, py, 2)
-
-# Make phantom
-
-    phantom_2d = make_phantom(N, coordinates);
-    phantom = phantom_2d |> f32 |> vec
-
-    ## plot_T₁T₂ρ(phantom, N, N, "Ground truth")
+    sliceprofiles = ones(length(sequence.RF_train),1) .|> complex;
+    unwrap(::Val{x}) where x = x
 
 # Make coil sensitivities
+    coil_sensitivities = ComplexF32.(ones(Nx * Ny, ncoils))
 
-    ncoils = 2
-    coil_sensitivities = rand((0.75:0.01:1.25), ncoils,N^2) .|> complex
-    coil_sensitivities .= 1
-    coil_sensitivities = map(SVector{ncoils}, eachcol(coil_sensitivities))
-
-    # We use two different receive coils
-    coil₁ = complex.(repeat(LinRange(0.8,1.2,N),1,N));
-    coil₂ = coil₁';
-
-    coil_sensitivities = map(SVector{2}, vec(coil₁), vec(coil₂))
-
-
-# Simulate data
-    nvoxels = length(coordinates)
+# Compas data structures
     compas_context = CompasToolkit.init_context(0)
-    compas_sequence = CompasToolkit.FispSequence(RF_train, sliceprofiles, TR, TE, max_state, TI)
-    compas_trajectory = CompasToolkit.CartesianTrajectory(nreadouts, nsamplesperreadout, Δt, k_start_readout, Δk_adc)
-    compas_phantom = CompasToolkit.TissueParameters(
-        nvoxels,
-        StructArray(phantom).T₁,
-        StructArray(phantom).T₂,
-        fill(1, nvoxels), # B1
-        fill(0, nvoxels), # B0
-        StructArray(phantom).ρˣ,
-        StructArray(phantom).ρʸ,
-        coordinates.x,
-        coordinates.y,
+
+    compas_sequence = CompasToolkit.FispSequence(
+        sequence.RF_train,
+        sliceprofiles,
+        sequence.TR,
+        sequence.TE,
+        unwrap(sequence.max_state),
+        sequence.TI;
+        undersampling_factor=sequence.py_undersampling_factor,
+        repetitions=sequence.repetitions,
     )
 
-    compas_coils = CompasToolkit.make_array(compas_context, ComplexF32.(hcat(vec(coil₁), vec(coil₂))))
-
-    compas_echos = CompasToolkit.simulate_magnetization(compas_phantom, compas_sequence)
-    compas_echos = CompasToolkit.phase_encoding(compas_echos, compas_phantom, compas_trajectory)
-    compas_data = CompasToolkit.magnetization_to_signal(compas_echos, compas_phantom, compas_trajectory, compas_coils)
-
-    compas = (
-        context = compas_context,
-        sequence = compas_sequence,
-        trajectory = compas_trajectory,
-        parameters = compas_phantom,
-        coils = compas_coils,
-        data = compas_data
+    compas_trajectory = CompasToolkit.CartesianTrajectory(
+        trajectory.nreadouts,
+        trajectory.nsamplesperreadout,
+        trajectory.Δt,
+        trajectory.k_start_readout,
+        trajectory.Δk_adc
     )
 
+    compas_coils = CompasToolkit.CompasArray(coil_sensitivities)
 
-
-# Set precision and send to gpu
-    phantom             = gpu(f32(vec(phantom)))
-    sequence            = gpu(f32(sequence))
-    trajectory          = gpu(f32(trajectory))
-    coil_sensitivities  = gpu(f32(coil_sensitivities))
-    coordinates         = gpu(f32(vec(coordinates)))
-
-# Simulate data
-    resource = CUDALibs()
-    # raw_data = simulate_signal(resource, sequence, phantom, trajectory, coil_sensitivities)
-    raw_data = Nothing
 
 # Add noise?
 
@@ -154,7 +114,7 @@ include("utils/pythonplot.jl")
     UB = T₁T₂ρˣρʸ(log(7.0), log(3.000),  Inf,  Inf) # note the logarithmic scaling to T1 and T2
 
     # Repeat x0, LB and UB for each voxel
-    nr_voxels = N^2;
+    nr_voxels = Nx*Ny;
 
     x0 = repeat(x0', nr_voxels) |> f32;
     LB = repeat(LB', nr_voxels) |> f32;
@@ -163,30 +123,77 @@ include("utils/pythonplot.jl")
     # Check that there are no points with coil sensitivity zero within the mask
     @assert all( Cᵢ -> !iszero(sum(Cᵢ)), coil_sensitivities);
 
-    # Make plot function for further plotting of the iterations
-    objfun = (x,mode) -> objective(x, resource, mode, compas.data, compas.sequence, coordinates, compas.coils, compas.trajectory)
+    qmaps = zeros(T₁T₂ρˣρʸ, Nx, Ny, nr_slices)
 
-    # Run Trust Refion Reflective solver
-    trf_min_ratio = 0.05;
-    trf_max_iter = 15
-    trf_max_iter_steihaug = 20;
-    trf_tol_steihaug = 0.1;
-    trf_init_scale_radius = 0.1;
-    trf_save_every_iter = false;
+    slice_num = something(args["num-slices"], nr_slices)
+    slice_start = something(args["start-slice"], (nr_slices - slice_num) ÷ 2 + 1)
+    slice_end = slice_start + slice_num - 1
 
-    TRF_options = TrustRegionReflective.SolverOptions(
-        trf_min_ratio,
-        trf_max_iter,
-        trf_max_iter_steihaug,
-        trf_tol_steihaug,
-        trf_init_scale_radius,
-        trf_save_every_iter)
+    time = @elapsed Threads.@threads :dynamic for slice in slice_start:1:slice_end
+        CompasToolkit.set_context(compas_context)
 
-    plotfun(x, figtitle) = plot_T₁T₂ρ(optim_to_physical_pars(x), N, N, figtitle)
+        thread_id = Threads.threadid()
+        println("Thread $thread_id will process slice $slice of $nr_slices")
 
-    plotfun(x0, "Initial Guess")
+        compas_data_slice = data[:,:,1,slice:slice]
+        coordinates_slice = vec(coordinates[:,:,1,slice])
 
-# Run non-linear solver
+        x0_slice = copy(x0)
+        x0_slice[:,3] .= real.(vec(pd[:,:,1,slice]))
+        x0_slice[:,4] .= imag.(vec(pd[:,:,1,slice]))
 
-    output = TrustRegionReflective.solver(objfun, vec(x0), vec(LB), vec(UB), TRF_options, plotfun)
+        # Run Trust Refion Reflective solver
+        trf_min_ratio = 0.05;
+        trf_max_iter = 5
+        trf_max_iter_steihaug = 20;
+        trf_tol_steihaug = 0.1;
+        trf_init_scale_radius = 0.1;
+        trf_save_every_iter = false;
 
+        TRF_options = TrustRegionReflective.TRFOptions(
+            trf_min_ratio,
+            trf_max_iter,
+            trf_max_iter_steihaug,
+            trf_tol_steihaug,
+            trf_init_scale_radius,
+            trf_save_every_iter,
+            false)
+
+        # Objective function
+        objfun = (x, mode) -> objective(
+                x, mode,
+                compas_data_slice,
+                compas_sequence,
+                coordinates_slice,
+                compas_coils,
+                compas_trajectory)
+
+
+        # Make plot function for further plotting of the iterations
+        plotfun(it, state) = () #plot_T₁T₂ρ(optim_to_physical_pars(x), Nx, Ny, figtitle)
+        plotfun(it, state) = plot_T₁T₂ρ(optim_to_physical_pars(state.x[:,it]), Nx, Ny, "Iteration")
+        #plotfun(x0_slice)
+
+        to = TimerOutputs.TimerOutput()
+
+        # Run non-linear solver
+        time = @elapsed output = TrustRegionReflective.trust_region_reflective(
+            objfun, vec(x0_slice), vec(LB), vec(UB), plotfun, to, TRF_options)
+
+        q = optim_to_physical_pars(output)
+        qmaps[:,:,slice] = reshape(q, Nx, Ny)
+
+        println("Thread $thread_id processed slice $slice of $nr_slices, took $time seconds")
+    end
+
+    println("Done. Took $time seconds")
+
+    return qmaps
+end
+
+qmap = main(parse_args())
+
+# Plot results:
+# qmaps.T₁
+# qmaps.T₂
+# complex.(qmaps.ρˣ, qmaps.ρʸ)
