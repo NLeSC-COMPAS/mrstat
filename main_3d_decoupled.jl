@@ -1,24 +1,23 @@
-using Revise
 using BlochSimulators
-using StaticArrays
+using CompasToolkit
+using ComputationalResources
+using ImagePhantoms
+using TimerOutputs
+using JLD2
 using LinearAlgebra
+using LinearMaps
+using Pkg
+using PythonPlot
+using Random
+using Revise
+using StaticArrays
 using Statistics
 using StructArrays
-using LinearMaps
-using ImagePhantoms
-using PythonPlot
-using ComputationalResources
-using CompasToolkit
-using Random
-using Pkg
-using JLD2
+using TrustRegionReflective
 
 GC.enable_logging(true)
 
-include("TrustRegionReflective/TrustRegionReflective.jl")
 include("DerivativeOperations/DerivativeOperations.jl")
-
-using .TrustRegionReflective
 using .DerivativeOperations
 
 include("utils/make_phantom.jl")
@@ -111,9 +110,9 @@ include("utils/pythonplot.jl")
 
     #for slice in 30:nr_slices-30 # First and last few slices aren't that interesting
     #for slice in fld(nr_slices, 2)-5:fld(nr_slices, 2)+5
-    time = @elapsed Threads.@threads :dynamic for slice in 100:1:101
+    time = @elapsed Threads.@threads :dynamic for slice in 100:1:115
         CompasToolkit.set_context(compas_context)
-            
+
         thread_id = Threads.threadid()
         println("Thread $thread_id will process slice $slice of $nr_slices")
 
@@ -135,32 +134,35 @@ include("utils/pythonplot.jl")
         trf_init_scale_radius = 0.1;
         trf_save_every_iter = false;
 
-        TRF_options = TrustRegionReflective.SolverOptions(
+        TRF_options = TrustRegionReflective.TRFOptions(
             trf_min_ratio,
             trf_max_iter,
             trf_max_iter_steihaug,
             trf_tol_steihaug,
             trf_init_scale_radius,
-            trf_save_every_iter)
+            trf_save_every_iter,
+            false)
 
         plotfun(x, figtitle) = () #plot_T₁T₂ρ(optim_to_physical_pars(x), Nx, Ny, figtitle)
-
         plotfun(x0_slice, "Initial Guess")
 
-        # Run non-linear solver
-        time = @elapsed output = TrustRegionReflective.solver(objfun, vec(x0_slice), vec(LB), vec(UB), TRF_options, plotfun)
+        to = TimerOutputs.TimerOutput()
 
-        q = optim_to_physical_pars(output.x[:,end])
+        # Run non-linear solver
+        time = @elapsed output = TrustRegionReflective.trust_region_reflective(
+            objfun, vec(x0_slice), vec(LB), vec(UB), plotfun, to, TRF_options)
+
+        q = optim_to_physical_pars(output)
         qmaps[:,:,slice] = reshape(q, Nx, Ny)
-        plot_T₁T₂ρ(q, Nx, Ny, "Result slice $slice")
-        
+        #plot_T₁T₂ρ(q, Nx, Ny, "Result slice $slice")
+
         println("Thread $thread_id processed slice $slice of $nr_slices, took $time seconds")
     end
-        
+
     println("Done. Took $time seconds")
 
 # Plot results:
 # qmaps.T₁
 # qmaps.T₂
 # complex.(qmaps.ρˣ, qmaps.ρʸ)
-#   
+#

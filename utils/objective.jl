@@ -62,80 +62,79 @@ function objective(optimpars::Vector{<:Real}, resource, mode, raw_data, sequence
     r_host = map(SVector{ncoils}, eachrow(r_host))
 
     # Compute cost f
-    f = 0.5 * f
+    f = 0.5f0 * f
 
-    if mode == 0
-
+    if mode == "fr"
         return f, r_host
+    end
 
-    elseif mode > 0
+    # Compute partial derivatives of magnetization at echo time
+    ∂echos = CompasToolkit.simulate_magnetization_derivatives(magnetization_original, parameters, sequence)
 
-        # Compute partial derivatives of magnetization at echo time
-        ∂echos = CompasToolkit.simulate_magnetization_derivatives(magnetization_original, parameters, sequence)
+    plot_file("derivative_T1", ∂echos.T1)
+    plot_file("derivative_T2", ∂echos.T2)
 
-        plot_file("derivative_T1", ∂echos.T1)
-        plot_file("derivative_T2", ∂echos.T2)
+    #∂echos = (
+    #    T1=repeat(collect(∂echos.T1), inner=(1, 2)),
+    #    T2=repeat(collect(∂echos.T2), inner=(1, 2))
+    #)
 
-        #∂echos = (
-        #    T1=repeat(collect(∂echos.T1), inner=(1, 2)),
-        #    T2=repeat(collect(∂echos.T2), inner=(1, 2))
-        #)
+    # Apply phase encoding
+    ∂echos = CompasToolkit.phase_encoding(∂echos, parameters, trajectory)
 
-        # Apply phase encoding
-        ∂echos = CompasToolkit.phase_encoding(∂echos, parameters, trajectory)
+    # Compute gradient
+    g = CompasToolkit.compute_jacobian_hermitian(
+        echos,
+        ∂echos,
+        parameters,
+        trajectory,
+        coil_sensitivities,
+        r
+    )
 
-        # Compute gradient
-        g = CompasToolkit.compute_jacobian_hermitian(
+    # Reshape as vector of reals
+    g = collect(g)
+    g = reshape(g, :)
+    g = real.(g)
+
+    if mode == "frg"
+        return f, r_host, g
+    end
+
+    # Make Gauss-Newton matrix multiply function
+    reJᴴJ(x) = begin
+        np = 4 # nr of reconstruction parameters per voxel
+        x = reshape(x,:,np)
+        x = ComplexF32.(x)
+
+        y = CompasToolkit.compute_jacobian(
             echos,
             ∂echos,
             parameters,
             trajectory,
             coil_sensitivities,
-            r
+            x
         )
 
-        # Reshape as vector of reals
-        g = collect(g)
-        g = reshape(g, :)
-        g = real.(g)
+        z = CompasToolkit.compute_jacobian_hermitian(
+            echos,
+            ∂echos,
+            parameters,
+            trajectory,
+            coil_sensitivities,
+            y
+        )
 
-        mode == 1 && return f, r_host, g
-
-        # Make Gauss-Newton matrix multiply function
-        reJᴴJ(x) = begin
-            np = 4 # nr of reconstruction parameters per voxel
-            x = reshape(x,:,np)
-            x = ComplexF32.(x)
-
-            y = CompasToolkit.compute_jacobian(
-                echos,
-                ∂echos,
-                parameters,
-                trajectory,
-                coil_sensitivities,
-                x
-            )
-
-            z = CompasToolkit.compute_jacobian_hermitian(
-                echos,
-                ∂echos,
-                parameters,
-                trajectory,
-                coil_sensitivities,
-                y
-            )
-
-            z = collect(z)
-            return real.(reshape(z, :))
-        end
-
-        H = LinearMap(
-            v -> reJᴴJ(v),
-            v -> v, # adjoint operation not used
-        length(g),length(g));
-
-        return f, r_host, g, H
+        z = collect(z)
+        return real.(reshape(z, :))
     end
+
+    H = LinearMap(
+        v -> reJᴴJ(v),
+        v -> v, # adjoint operation not used
+    length(g),length(g));
+
+    return f, r_host, g, H
 end
 
 function optim_to_physical_pars(optimpars)
