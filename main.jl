@@ -40,6 +40,10 @@ function parse_args()
             help = "the input file"
             arg_type = String
             default = "mrstat_3d_decoupled_with_pd2.jld2"
+        "--output", "-o"
+            help = "the output file"
+            arg_type = String
+            default = "output.jld2"
         "--gc-debug"
             help = "enable garbage collection logging"
             action = :store_true
@@ -204,6 +208,20 @@ end
 
 args = parse_args()
 output, mask = main(args)
+output_file = args["output"]
+
+if !isempty(output_file)
+    jldsave(
+        output_file;
+        mask=Array{Int8}(mask),
+        T1=Array{Float32}(StructArray(output).T₁),
+        T2=Array{Float32}(StructArray(output).T₂),
+        rho_x=Array{Float32}(StructArray(output).ρˣ),
+        rho_y=Array{Float32}(StructArray(output).ρʸ),
+    )
+
+    println("Wrote output to $output_file")
+end
 
 # Plot results:
 # qmaps.T₁
