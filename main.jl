@@ -20,6 +20,7 @@ include("DerivativeOperations/DerivativeOperations.jl")
 using .DerivativeOperations
 
 include("utils/make_phantom.jl")
+include("utils/mask.jl")
 include("utils/objective.jl")
 include("utils/RelaxationColors.jl")
 include("utils/pythonplot.jl")
@@ -35,7 +36,7 @@ function parse_args()
         "--start-slice", "-s"
             help = "offset slice from where to start processing"
             arg_type = Int
-        "--file-name", "-f"
+        "--input", "-i"
             help = "the input file"
             arg_type = String
             default = "mrstat_3d_decoupled_with_pd2.jld2"
@@ -54,7 +55,7 @@ function main(args)
     end
 
 # Load JLD2 file with data, sequence, trajectory and coordinates
-    file_name = args["file-name"]
+    file_name = args["input"]
     @load file_name data sequence trajectory coordinates pd
 
     Nx = size(coordinates, 1)
@@ -78,7 +79,7 @@ function main(args)
     unwrap(::Val{x}) where x = x
 
 # Make coil sensitivities
-    coil_sensitivities = ComplexF32.(ones(Nx * Ny, ncoils))
+    coil_sensitivities = ComplexF32.(ones(Nx, Ny, ncoils))
 
 # Compas data structures
     compas_context = CompasToolkit.init_context(0)
@@ -102,12 +103,31 @@ function main(args)
         trajectory.Δk_adc
     )
 
-    compas_coils = CompasToolkit.CompasArray(coil_sensitivities)
+# Compute mask
+    mask = calculate_ρ_mask(pd[:,:,1,:])
 
+    fraction = sum(mask) / length(mask) * 100
+    println("calculated mask, $fraction% is within mask")
 
 # Add noise?
+    # TODO
 
 # Set reconstruction options
+    trf_min_ratio = 0.05;
+    trf_max_iter = 15
+    trf_max_iter_steihaug = 20;
+    trf_tol_steihaug = 0.1;
+    trf_init_scale_radius = 0.1;
+    trf_save_every_iter = false;
+
+    TRF_options = TrustRegionReflective.TRFOptions(
+        trf_min_ratio,
+        trf_max_iter,
+        trf_max_iter_steihaug,
+        trf_tol_steihaug,
+        trf_init_scale_radius,
+        trf_save_every_iter,
+        false)
 
     x0 = T₁T₂ρˣρʸ(log(1.0), log(0.100),  1.0,  0.0) # note the logarithmic scaling to T1 and T2
     LB = T₁T₂ρˣρʸ(log(0.1), log(0.001), -Inf, -Inf) # note the logarithmic scaling to T1 and T2
@@ -115,10 +135,6 @@ function main(args)
 
     # Repeat x0, LB and UB for each voxel
     nr_voxels = Nx*Ny;
-
-    x0 = repeat(x0', nr_voxels) |> f32;
-    LB = repeat(LB', nr_voxels) |> f32;
-    UB = repeat(UB', nr_voxels) |> f32;
 
     # Check that there are no points with coil sensitivity zero within the mask
     @assert all( Cᵢ -> !iszero(sum(Cᵢ)), coil_sensitivities);
@@ -132,32 +148,25 @@ function main(args)
     time = @elapsed Threads.@threads :dynamic for slice in slice_start:1:slice_end
         CompasToolkit.set_context(compas_context)
 
+        pd_slice = pd[:,:,1,slice]
+        mask_slice = findall(mask[:,:,slice])
+        mask_len = length(mask_slice)
+
+        if mask_len == 0
+            println("Skpping slice $slice (of $nr_slices) as it is empty")
+            continue
+        end
+
+        x0_slice = repeat(x0', mask_len) |> f32;
+        x0_slice[:,3] .= real.(pd[mask_slice,1,slice])
+        x0_slice[:,4] .= imag.(pd[mask_slice,1,slice])
+
+        coordinates_slice = coordinates[mask_slice,1,slice]
+        compas_data_slice = CompasToolkit.CompasArray(data[:,:,1,slice:slice])
+        compas_coils = CompasToolkit.CompasArray(coil_sensitivities[mask_slice,:])
+
         thread_id = Threads.threadid()
-        println("Thread $thread_id will process slice $slice of $nr_slices")
-
-        compas_data_slice = data[:,:,1,slice:slice]
-        coordinates_slice = vec(coordinates[:,:,1,slice])
-
-        x0_slice = copy(x0)
-        x0_slice[:,3] .= real.(vec(pd[:,:,1,slice]))
-        x0_slice[:,4] .= imag.(vec(pd[:,:,1,slice]))
-
-        # Run Trust Refion Reflective solver
-        trf_min_ratio = 0.05;
-        trf_max_iter = 5
-        trf_max_iter_steihaug = 20;
-        trf_tol_steihaug = 0.1;
-        trf_init_scale_radius = 0.1;
-        trf_save_every_iter = false;
-
-        TRF_options = TrustRegionReflective.TRFOptions(
-            trf_min_ratio,
-            trf_max_iter,
-            trf_max_iter_steihaug,
-            trf_tol_steihaug,
-            trf_init_scale_radius,
-            trf_save_every_iter,
-            false)
+        println("Thread $thread_id will process slice $slice (of $nr_slices) having $mask_len voxels")
 
         # Objective function
         objfun = (x, mode) -> objective(
@@ -168,30 +177,33 @@ function main(args)
                 compas_coils,
                 compas_trajectory)
 
+        LB_slice = repeat(LB', mask_len) |> f32;
+        UB_slice = repeat(UB', mask_len) |> f32;
 
         # Make plot function for further plotting of the iterations
         plotfun(it, state) = () #plot_T₁T₂ρ(optim_to_physical_pars(x), Nx, Ny, figtitle)
-        plotfun(it, state) = plot_T₁T₂ρ(optim_to_physical_pars(state.x[:,it]), Nx, Ny, "Iteration")
+        #plotfun(it, state) = plot_T₁T₂ρ(optim_to_physical_pars(state.x[:,it]), Nx, Ny, "Iteration")
         #plotfun(x0_slice)
 
         to = TimerOutputs.TimerOutput()
 
         # Run non-linear solver
         time = @elapsed output = TrustRegionReflective.trust_region_reflective(
-            objfun, vec(x0_slice), vec(LB), vec(UB), plotfun, to, TRF_options)
+                objfun, vec(x0_slice), vec(LB_slice), vec(UB_slice), plotfun, to, TRF_options)
 
         q = optim_to_physical_pars(output)
-        qmaps[:,:,slice] = reshape(q, Nx, Ny)
+        qmaps[mask_slice,slice] = q
 
         println("Thread $thread_id processed slice $slice of $nr_slices, took $time seconds")
     end
 
     println("Done. Took $time seconds")
 
-    return qmaps
+    return qmaps, mask
 end
 
-qmap = main(parse_args())
+args = parse_args()
+output, mask = main(args)
 
 # Plot results:
 # qmaps.T₁
