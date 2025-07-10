@@ -36,6 +36,14 @@ function parse_args()
         "--start-slice", "-s"
             help = "offset slice from where to start processing"
             arg_type = Int
+        "--threshold", "-t"
+            help = "threshold used for calculating mask"
+            arg_type = Float32
+            default = 0.05
+        "--convergence-tolerance"
+            help = "tolerance for convergence in range [0, 1]"
+            arg_type = Float64
+            default = 0.01
         "--input", "-i"
             help = "the input file"
             arg_type = String
@@ -47,6 +55,10 @@ function parse_args()
         "--gc-debug"
             help = "enable garbage collection logging"
             action = :store_true
+        "--upsample"
+            help = "upsample the spatial resolution by a given factor"
+            arg_type = Float64
+            default = 1.0
     end
 
     return ArgParse.parse_args(s)
@@ -69,9 +81,9 @@ function main(args)
 
     println("parsing ", file_name)
     println("- num. slices: ", nr_slices)
+    println("- num. voxels: ", Nx, "x", Ny)
     println("- num. readouts: ", trajectory.nreadouts)
     println("- num. samples per readout: ", trajectory.nsamplesperreadout)
-    println("- num. voxels: ", Nx, "x", Ny)
     println("- num. coils: ", ncoils)
 
 # Fix k0
@@ -108,7 +120,7 @@ function main(args)
     )
 
 # Compute mask
-    mask = calculate_ρ_mask(pd[:,:,1,:])
+    mask = calculate_ρ_mask(pd[:,:,1,:], args["threshold"])
 
     fraction = sum(mask) / length(mask) * 100
     println("calculated mask, $fraction% is within mask")
@@ -120,7 +132,7 @@ function main(args)
     trf_min_ratio = 0.05;
     trf_max_iter = 15
     trf_max_iter_steihaug = 20;
-    trf_tol_steihaug = 0.1;
+    trf_tol_steihaug = args["convergence-tolerance"];
     trf_init_scale_radius = 0.1;
     trf_save_every_iter = false;
 
@@ -148,16 +160,21 @@ function main(args)
     slice_num = something(args["num-slices"], nr_slices)
     slice_start = something(args["start-slice"], (nr_slices - slice_num) ÷ 2 + 1)
     slice_end = slice_start + slice_num - 1
+    
+    slice_time_start = zeros(nr_slices)
+    slice_time_end = zeros(nr_slices)
 
-    time = @elapsed Threads.@threads :dynamic for slice in slice_start:1:slice_end
+    time_total = @elapsed Threads.@threads :dynamic for slice in slice_start:1:slice_end
         CompasToolkit.set_context(compas_context)
+        slice_time_start[slice] = time()
+        slice_time_end[slice] = time()
 
         pd_slice = pd[:,:,1,slice]
         mask_slice = findall(mask[:,:,slice])
         mask_len = length(mask_slice)
 
         if mask_len == 0
-            println("Skpping slice $slice (of $nr_slices) as it is empty")
+            println("Skipping slice $slice (of $nr_slices) as it is empty")
             continue
         end
 
@@ -179,7 +196,7 @@ function main(args)
                 compas_sequence,
                 coordinates_slice,
                 compas_coils,
-                compas_trajectory)
+                compas_trajectory, sequence)
 
         LB_slice = repeat(LB', mask_len) |> f32;
         UB_slice = repeat(UB', mask_len) |> f32;
@@ -192,22 +209,23 @@ function main(args)
         to = TimerOutputs.TimerOutput()
 
         # Run non-linear solver
-        time = @elapsed output = TrustRegionReflective.trust_region_reflective(
-                objfun, vec(x0_slice), vec(LB_slice), vec(UB_slice), plotfun, to, TRF_options)
+        time_slice = @elapsed output = TrustRegionReflective.trust_region_reflective(
+                objfun, vec(x0_slice), vec(LB_slice), vec(UB_slice), plotfun, to, TRF_options,)
 
         q = optim_to_physical_pars(output)
         qmaps[mask_slice,slice] = q
 
-        println("Thread $thread_id processed slice $slice of $nr_slices, took $time seconds")
+        println("Thread $thread_id processed slice $slice of $nr_slices, took $time_slice seconds")
+        slice_time_end[slice] = time()
     end
 
-    println("Done. Took $time seconds")
+    println("Done. Took $time_total seconds")
 
-    return qmaps, mask
+    return qmaps, mask, (slice_time_start, slice_time_end)
 end
 
 args = parse_args()
-output, mask = main(args)
+output, mask, slice_time = main(args)
 output_file = args["output"]
 
 if !isempty(output_file)
@@ -218,6 +236,8 @@ if !isempty(output_file)
         T2=Array{Float32}(StructArray(output).T₂),
         rho_x=Array{Float32}(StructArray(output).ρˣ),
         rho_y=Array{Float32}(StructArray(output).ρʸ),
+        slice_time_start=Array{Float64}(slice_time[1]),
+        slice_time_end=Array{Float64}(slice_time[2]),
     )
 
     println("Wrote output to $output_file")
