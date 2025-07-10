@@ -165,7 +165,7 @@ function main(args)
     slice_time_end = zeros(nr_slices)
 
     time_total = @elapsed Threads.@threads :dynamic for slice in slice_start:1:slice_end
-        CompasToolkit.set_context(compas_context)
+        CompasToolkit.set_context(compas_context, Threads.threadid())
         slice_time_start[slice] = time()
         slice_time_end[slice] = time()
 
