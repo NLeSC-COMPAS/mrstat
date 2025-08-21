@@ -160,11 +160,11 @@ function main(args)
     slice_num = something(args["num-slices"], nr_slices)
     slice_start = something(args["start-slice"], (nr_slices - slice_num) ÷ 2 + 1)
     slice_end = slice_start + slice_num - 1
-    
+
     slice_time_start = zeros(nr_slices)
     slice_time_end = zeros(nr_slices)
 
-    time_total = @elapsed Threads.@threads :dynamic for slice in slice_start:1:slice_end
+    time_total = @elapsed Threads.@threads :greedy for slice in slice_start:1:slice_end
         CompasToolkit.set_context(compas_context, Threads.threadid())
         slice_time_start[slice] = time()
         slice_time_end[slice] = time()

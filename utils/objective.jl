@@ -3,7 +3,7 @@ using Statistics
 using PythonPlot
 
 
-function objective(optimpars::Vector{<:Real}, mode, raw_data, sequence, coordinates, coil_sensitivities, trajectory)
+function objective(optimpars::Vector{<:Real}, mode, raw_data, sequence, coordinates, coil_sensitivities, trajectory, bloch_sequence)
     #GC.gc(true)
 
     # We compute the residual rᵢ = ||d Σᵢ (dᵢ - M(T₁,T₂,B₁,B₀)*Cᵢ*ρ)
@@ -33,8 +33,7 @@ function objective(optimpars::Vector{<:Real}, mode, raw_data, sequence, coordina
 
 
     # Compute magnetization at echo times
-    magnetization_original = CompasToolkit.simulate_magnetization(parameters, sequence)
-    magnetization = magnetization_original #repeat(collect(magnetization_original), inner=(1, 2))
+    magnetization = CompasToolkit.simulate_magnetization(parameters, sequence)
 
     # Apply phase encoding
     echos = CompasToolkit.phase_encoding(
@@ -61,7 +60,7 @@ function objective(optimpars::Vector{<:Real}, mode, raw_data, sequence, coordina
     end
 
     # Compute partial derivatives of magnetization at echo time
-    ∂echos = CompasToolkit.simulate_magnetization_derivatives(magnetization_original, parameters, sequence)
+    ∂echos = CompasToolkit.simulate_magnetization_derivatives(magnetization, parameters, sequence)
 
     # Apply phase encoding
     ∂echos = CompasToolkit.phase_encoding(∂echos, parameters, trajectory)
