@@ -40,6 +40,10 @@ function parse_args()
             help = "threshold used for calculating mask"
             arg_type = Float32
             default = 0.05
+        "--steihaug-tolerance"
+            help = "tolerance for steihaug in range [0, 1]"
+            arg_type = Float64
+            default = 0.01
         "--convergence-tolerance"
             help = "tolerance for convergence in range [0, 1]"
             arg_type = Float64
@@ -132,7 +136,8 @@ function main(args)
     trf_min_ratio = 0.05;
     trf_max_iter = 15
     trf_max_iter_steihaug = 20;
-    trf_tol_steihaug = args["convergence-tolerance"];
+    trf_tol_steihaug = args["steihaug-tolerance"];
+    trf_tol_convergence = args["convergence-tolerance"];
     trf_init_scale_radius = 0.1;
     trf_save_every_iter = false;
 
@@ -141,6 +146,7 @@ function main(args)
         trf_max_iter,
         trf_max_iter_steihaug,
         trf_tol_steihaug,
+        trf_tol_convergence,
         trf_init_scale_radius,
         trf_save_every_iter,
         false)
