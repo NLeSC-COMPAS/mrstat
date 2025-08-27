@@ -146,7 +146,11 @@ function main(args)
         trf_max_iter,
         trf_max_iter_steihaug,
         trf_tol_steihaug,
+<<<<<<< Updated upstream
         trf_tol_convergence,
+=======
+        1E-6,
+>>>>>>> Stashed changes
         trf_init_scale_radius,
         trf_save_every_iter,
         false)
