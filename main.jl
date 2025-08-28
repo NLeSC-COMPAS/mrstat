@@ -146,11 +146,7 @@ function main(args)
         trf_max_iter,
         trf_max_iter_steihaug,
         trf_tol_steihaug,
-<<<<<<< Updated upstream
         trf_tol_convergence,
-=======
-        1E-6,
->>>>>>> Stashed changes
         trf_init_scale_radius,
         trf_save_every_iter,
         false)
@@ -173,9 +169,11 @@ function main(args)
 
     slice_time_start = zeros(nr_slices)
     slice_time_end = zeros(nr_slices)
+    slice_thread_id = zeros(nr_slices)
 
     time_total = @elapsed Threads.@threads :greedy for slice in slice_start:1:slice_end
         CompasToolkit.set_context(compas_context, Threads.threadid())
+        slice_thread_id[slice] = Threads.threadid()
         slice_time_start[slice] = time()
         slice_time_end[slice] = time()
 
@@ -231,7 +229,7 @@ function main(args)
 
     println("Done. Took $time_total seconds")
 
-    return qmaps, mask, (slice_time_start, slice_time_end)
+    return qmaps, mask, (slice_time_start, slice_time_end, slice_thread_id)
 end
 
 args = parse_args()
@@ -248,6 +246,7 @@ if !isempty(output_file)
         rho_y=Array{Float32}(StructArray(output).ρʸ),
         slice_time_start=Array{Float64}(slice_time[1]),
         slice_time_end=Array{Float64}(slice_time[2]),
+        slice_thread_id=Array{Float64}(slice_time[3]),
     )
 
     println("Wrote output to $output_file")
